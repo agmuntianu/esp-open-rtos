@@ -1,5 +1,9 @@
 # Yet another I2C driver for the ESP8266
 
+2017 04 26:  Frede Schmidt:   Changed speed on the I2C to 100 KHz
+
+
+
 This time a driver for the excellent esp-open-rtos. This is a bit banging I2C driver based on the Wikipedia pesudo C code [1].
 
 ### Usage

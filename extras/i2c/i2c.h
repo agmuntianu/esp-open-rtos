@@ -36,7 +36,7 @@ extern "C" {
 #endif
 
 
-#define I2C_FREQUENCY_400K true  // for test WIP
+// #define I2C_FREQUENCY_400K true  // for test WIP
 
 /*
  *  Some bit can be transmit slower.
@@ -51,9 +51,9 @@ extern "C" {
 #elif defined(I2C_FREQUENCY_400K)
 #define I2C_CUSTOM_DELAY_160MHZ   10
 #define I2C_CUSTOM_DELAY_80MHZ    1   //Sry, maximum is 320kHz at 80MHz
-#else
-#define I2C_CUSTOM_DELAY_160MHZ   100
-#define I2C_CUSTOM_DELAY_80MHZ    20
+#else                                 // default er 100 Khz  
+#define I2C_CUSTOM_DELAY_160MHZ   160     //100
+#define I2C_CUSTOM_DELAY_80MHZ    50      //20
 #endif
 
 // I2C driver for ESP8266 written for use with esp-open-rtos
