@@ -25,8 +25,19 @@
 #ifndef __STDIN_UART_INTERRUPT_H__
 #define __STDIN_UART_INTERRUPT_H__
 
+#include "FreeRTOS.h"
 #include <stdint.h>
 
-// Return number of characters waiting in UART0
+/* Return number of characters waiting in UART0. */
 uint32_t uart0_num_char(void);
+
+/* Set UART0 input to nonblocking or blocking, returning the old state. */
+int uart0_set_nonblock(int);
+
+/* Set the UART0 input wait time in ticks, or zero to wait indefinitely,
+ * returning the old wait time. The wait time is only used when the input is
+ * blocking.
+ */
+TickType_t uart0_set_vtime(TickType_t ticks);
+
 #endif

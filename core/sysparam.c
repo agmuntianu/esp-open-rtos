@@ -505,6 +505,8 @@ sysparam_status_t sysparam_init(uint32_t base_addr, uint32_t top_addr) {
     struct sysparam_context ctx;
     uint16_t num_sectors;
 
+    _sysparam_info.sem = xSemaphoreCreateMutex();
+
     // Make sure we're starting at the beginning of the sector
     base_addr -= (base_addr % sdk_flashchip.sector_size);
 
@@ -584,8 +586,6 @@ sysparam_status_t sysparam_init(uint32_t base_addr, uint32_t top_addr) {
         _sysparam_info.end_addr = ctx.addr;
     }
 
-    _sysparam_info.sem = xSemaphoreCreateMutex();
-
     return SYSPARAM_OK;
 }
 
@@ -606,9 +606,9 @@ sysparam_status_t sysparam_create_area(uint32_t base_addr, uint16_t num_sectors,
     if (!force) {
         // First, scan through the area and make sure it's actually empty and
         // we're not going to be clobbering something else important.
-        for (addr = base_addr; addr < base_addr + region_size * 2; addr += SCAN_BUFFER_SIZE) {
+        for (addr = base_addr; addr < base_addr + region_size * 2; addr += SCAN_BUFFER_SIZE * sizeof(uint32_t)) {
             debug(3, "read %d words @ 0x%08x", SCAN_BUFFER_SIZE, addr);
-            CHECK_FLASH_OP(spiflash_read(addr, (uint8_t*)buffer, SCAN_BUFFER_SIZE * 4));
+            CHECK_FLASH_OP(spiflash_read(addr, (uint8_t*)buffer, SCAN_BUFFER_SIZE * sizeof(uint32_t)));
             for (i = 0; i < SCAN_BUFFER_SIZE; i++) {
                 if (buffer[i] != 0xffffffff) {
                     // Uh oh, not empty.
@@ -801,9 +801,13 @@ sysparam_status_t sysparam_get_bool(const char *key, bool *result) {
     do {
         if (binary) {
             if (data_len == 1) {  // int8 value
-                *result = (int8_t)(*buf) ? true : false;
+                uint8_t value;
+                memcpy(&value, buf, sizeof(value));
+                *result = value ? true : false;
             } else if (data_len == 4) {  // int32 value
-                *result = (int32_t)(*buf) ? true : false;
+                uint32_t value;
+                memcpy(&value, buf, sizeof(value));
+                *result = value ? true : false;
             } else {
                 status = SYSPARAM_PARSEFAILED;
             }

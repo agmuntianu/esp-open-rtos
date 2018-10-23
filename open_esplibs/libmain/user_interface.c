@@ -3,9 +3,6 @@
    Copyright (C) 2015 Espressif Systems. Derived from MIT Licensed SDK libraries.
    BSD Licensed as described in the file LICENSE
 */
-#include "open_esplibs.h"
-#if OPEN_LIBMAIN_USER_INTERFACE
-// The contents of this file are only built if OPEN_LIBMAIN_USER_INTERFACE is set to true
 
 #include "FreeRTOS.h"
 #include "task.h"
@@ -66,10 +63,10 @@ static void _deep_sleep_phase2(void *timer_arg);
 static struct netif *_get_netif(uint32_t mode);
 
 // Linker-created values used by sdk_system_print_meminfo
-extern uint32_t _data_start, _data_end;
-extern uint32_t _rodata_start, _rodata_end;
-extern uint32_t _bss_start, _bss_end;
-extern uint32_t _heap_start;
+extern uint8_t _data_start[], _data_end[];
+extern uint8_t _rodata_start[], _rodata_end[];
+extern uint8_t _bss_start[], _bss_end[];
+extern uint8_t _heap_start[];
 
 #define _rom_reset_vector ((void (*)(void))0x40000080)
 
@@ -147,8 +144,8 @@ bool IRAM sdk_system_rtc_mem_read(uint32_t src_addr, void *des_addr, uint16_t sa
     return true;
 }
 
-void sdk_system_pp_recycle_rx_pkt(void *eb) {
-        sdk_ppRecycleRxPkt(eb);
+void sdk_system_pp_recycle_rx_pkt(struct esf_buf *esf_buf) {
+        sdk_ppRecycleRxPkt(esf_buf);
 }
 
 uint16_t sdk_system_adc_read(void) {
@@ -471,8 +468,7 @@ uint32_t sdk_system_relative_time(uint32_t reltime) {
     return WDEV.SYS_TIME - reltime;
 }
 
-// Change arg types to ip4_addr for lwip v2.
-void sdk_system_station_got_ip_set(struct ip_addr *ip, struct ip_addr *mask, struct ip_addr *gw) {
+void sdk_system_station_got_ip_set(struct ip4_addr *ip, struct ip4_addr *mask, struct ip4_addr *gw) {
     uint8_t *ip_bytes = (uint8_t *)&ip->addr;
     uint8_t *mask_bytes = (uint8_t *)&mask->addr;
     uint8_t *gw_bytes = (uint8_t *)&gw->addr;
@@ -488,11 +484,14 @@ void sdk_system_station_got_ip_set(struct ip_addr *ip, struct ip_addr *mask, str
     }
 }
 
+extern void *xPortSupervisorStackPointer;
+
 void sdk_system_print_meminfo(void) {
-    printf("%s: 0x%x ~ 0x%x, len: %d\n", "data  ", _data_start, _data_end, _data_end - _data_start);
-    printf("%s: 0x%x ~ 0x%x, len: %d\n", "rodata", _rodata_start, _rodata_end, _rodata_end - _rodata_start);
-    printf("%s: 0x%x ~ 0x%x, len: %d\n", "bss   ", _bss_start, _bss_end, _bss_end - _bss_start);
-    printf("%s: 0x%x ~ 0x%x, len: %d\n", "heap  ", _heap_start, 0x3fffc000, 0x3fffc000 - _heap_start);
+    uint8_t *heap_end = xPortSupervisorStackPointer;
+    printf("%s: %p ~ %p, len: %d\n", "data  ", _data_start, _data_end, _data_end - _data_start);
+    printf("%s: %p ~ %p, len: %d\n", "rodata", _rodata_start, _rodata_end, _rodata_end - _rodata_start);
+    printf("%s: %p ~ %p, len: %d\n", "bss   ", _bss_start, _bss_end, _bss_end - _bss_start);
+    printf("%s: %p ~ %p, len: %d\n", "heap  ", _heap_start, heap_end, heap_end - _heap_start);
 }
 
 uint32_t sdk_system_get_free_heap_size(void) {
@@ -547,10 +546,13 @@ bool sdk_wifi_station_dhcpc_start(void) {
         sdk_info.sta_ipaddr.addr = 0;
         sdk_info.sta_netmask.addr = 0;
         sdk_info.sta_gw.addr = 0;
+        LOCK_TCPIP_CORE();
         netif_set_addr(netif, &sdk_info.sta_ipaddr, &sdk_info.sta_netmask, &sdk_info.sta_gw);
         if (dhcp_start(netif)) {
+            UNLOCK_TCPIP_CORE();
             return false;
         }
+        UNLOCK_TCPIP_CORE();
     }
     sdk_dhcpc_flag = DHCP_STARTED;
     return true;
@@ -561,16 +563,68 @@ bool sdk_wifi_station_dhcpc_stop(void) {
     if (sdk_wifi_get_opmode() == 2) {
         return false;
     }
+    LOCK_TCPIP_CORE();
     if (netif && sdk_dhcpc_flag == DHCP_STARTED) {
         dhcp_stop(netif);
     }
     sdk_dhcpc_flag = DHCP_STOPPED;
+    UNLOCK_TCPIP_CORE();
     return true;
 }
 
 enum sdk_dhcp_status sdk_wifi_station_dhcpc_status(void) {
     return sdk_dhcpc_flag;
 }
+
+
+#ifndef WIFI_PARAM_SAVE
+#define WIFI_PARAM_SAVE 1
+#endif
+
+#if WIFI_PARAM_SAVE
+static void wifi_save_protect(uint32_t sector, uint32_t sector_size, uint32_t *arg2, size_t size) {
+    uint32_t *buffer = malloc(size);
+    uint32_t offset = sector * sector_size;
+
+    do  {
+        sdk_spi_flash_erase_sector(sector);
+        sdk_spi_flash_write(offset, arg2, size);
+        sdk_spi_flash_read(offset, buffer, size);
+        if (memcmp(buffer, arg2, size) == 0) {
+            break;
+        }
+        printf("[W]sec %d error\n", sector);
+    } while (1);
+
+    free(buffer);
+}
+#endif
+
+void sdk_wifi_param_save_protect(struct sdk_g_ic_saved_st *params) {
+#if WIFI_PARAM_SAVE
+    uint32_t sector_size = sdk_flashchip.sector_size;
+    uint32_t sectors = sdk_flashchip.chip_size / sector_size;
+
+    uint32_t dir_sector = sectors - 1;
+    struct param_dir_st dir;
+    sdk_spi_flash_read(dir_sector * sector_size, (uint32_t *)&dir, sizeof(dir));
+    uint8_t current_sector = dir.current_sector ? 1 : 0;
+    dir.current_sector = current_sector;
+
+    uint32_t param_sector_start = sectors - 3;
+    wifi_save_protect(param_sector_start + current_sector, sector_size,
+                      (uint32_t *)params, sizeof(struct sdk_g_ic_saved_st));
+
+    dir.cksum_magic = 0x55AA55AA;
+    uint32_t save_count = dir.save_count + 1;
+    dir.save_count = (save_count) ? save_count : 1;
+    dir.cksum_len[current_sector] = sizeof(dir);
+    uint32_t checksum = sdk_system_get_checksum((uint8_t *)params, sizeof(dir));
+    dir.cksum_value[current_sector] = checksum;
+    wifi_save_protect(dir_sector, sector_size, (uint32_t *)&dir, sizeof(dir));
+#endif
+}
+
 
 uint8_t sdk_wifi_station_get_connect_status() {
     if (sdk_wifi_get_opmode() == 2) // ESPCONN_AP
@@ -588,9 +642,9 @@ bool sdk_wifi_get_ip_info(uint8_t if_index, struct ip_info *info) {
     if (!info) return false;
     struct netif *netif = _get_netif(if_index);
     if (netif) {
-        info->ip = netif->ip_addr;
-        info->netmask = netif->netmask;
-        info->gw = netif->gw;
+        ip4_addr_set(&info->ip, ip_2_ip4(&netif->ip_addr));
+        ip4_addr_set(&info->netmask, ip_2_ip4(&netif->netmask));
+        ip4_addr_set(&info->gw, ip_2_ip4(&netif->gw));
         return true;
     }
 
@@ -617,8 +671,11 @@ bool sdk_wifi_set_ip_info(uint8_t if_index, struct ip_info *info) {
     }
 
     struct netif *netif = _get_netif(if_index);
-    if (netif)
+    if (netif) {
+        LOCK_TCPIP_CORE();
         netif_set_addr(netif, &info->ip, &info->netmask, &info->gw);
+        UNLOCK_TCPIP_CORE();
+    }
 
     return true;
 }
@@ -719,5 +776,3 @@ bool sdk_wifi_set_sleep_type(enum sdk_sleep_type type)
     sdk_pm_set_sleep_type_from_upper(type);
     return true;
 }
-
-#endif /* OPEN_LIBMAIN_USER_INTERFACE */
